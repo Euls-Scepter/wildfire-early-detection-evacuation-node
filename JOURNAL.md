@@ -119,6 +119,8 @@ void loop() {
   delay(1000);
 }
 
+---
+
 ## 7. Uploading the Program
 
 I uploaded the test program to the ESP32 using Arduino IDE.
@@ -138,6 +140,8 @@ Hash of data verified.
 Hard resetting via RTS pin...
 
 The successful verification confirmed that the program was correctly written to the ESP32's flash memory.
+
+---
 
 ## 8. Final Hardware Test
 
