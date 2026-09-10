@@ -104,7 +104,7 @@ The port was configured to:
 
 To verify that the ESP32 could execute a program, I created a simple LED blinking program.
 
-
+```cpp
 #define LED_PIN 2
 
 void setup() {
@@ -118,6 +118,7 @@ void loop() {
   digitalWrite(LED_PIN, LOW);
   delay(1000);
 }
+```
 
 ---
 
@@ -166,7 +167,7 @@ To properly read the analog output data from the sensor without getting garbled 
 To verify that the ESP32 could read analog data from the MQ-2 sensor, I created and uploaded a monitoring program.
 
 ```cpp
-const int mq2Pin = 34; // Nakakonekta ang AO sa D34
+const int mq2Pin = 34; // AO connected to D34
 
 void setup() {
   Serial.begin(115200);
@@ -179,3 +180,4 @@ void loop() {
   Serial.println(sensorValue);
   delay(1000);
 }
+```
