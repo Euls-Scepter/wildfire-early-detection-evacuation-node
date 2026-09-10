@@ -118,3 +118,57 @@ void loop() {
   digitalWrite(LED_PIN, LOW);
   delay(1000);
 }
+
+I uploaded the test program to the ESP32 using Arduino IDE.
+
+The upload was completed successfully.
+
+The Arduino IDE output showed:
+
+Writing at 0x0004efc0 [==============================] 100.0%
+
+Wrote 257984 bytes (147862 compressed) at 0x00010000
+
+Verifying written data...
+
+Hash of data verified.
+
+Hard resetting via RTS pin...
+
+The successful verification confirmed that the program was correctly written to the ESP32's flash memory.
+
+8. Final Hardware Test
+
+After uploading the program, the ESP32 automatically restarted.
+
+The onboard blue LED started blinking repeatedly, following the programmed one-second ON and one-second OFF pattern.
+
+This confirmed that the ESP32 was not only receiving power and communicating with the computer, but was also successfully executing the uploaded program.
+
+Final Result
+| Test                         | Result      |
+| ---------------------------- | ----------- |
+| ESP32 receives power         | PASS        |
+| Power LED                    | PASS        |
+| CP2102 USB-to-UART detection | PASS        |
+| CP210x driver installation   | PASS        |
+| COM port detection           | PASS – COM3 |
+| Arduino IDE connection       | PASS        |
+| ESP32 board package          | PASS        |
+| Program compilation          | PASS        |
+| Program upload               | PASS        |
+| Flash verification           | PASS        |
+| ESP32 program execution      | PASS        |
+| Onboard LED test             | PASS        |
+
+Conclusion
+
+The initial hardware test of the ESP32 was successful.
+
+The board was able to receive power, communicate with the laptop through the CP2102 USB-to-UART interface, appear as COM3, receive a program from Arduino IDE, verify the uploaded firmware, restart, and execute the LED blinking program.
+
+Based on these tests, the ESP32 is currently functioning properly and can proceed to the next stage of the project.
+
+The next step is to test the project's sensors individually, starting with the MQ-2 gas sensor and TMP36 temperature sensor, before integrating them into the Wildfire Early-Detection & Evacuation Node.
+
+
