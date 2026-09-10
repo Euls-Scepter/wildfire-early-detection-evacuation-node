@@ -104,7 +104,7 @@ The port was configured to:
 
 To verify that the ESP32 could execute a program, I created a simple LED blinking program.
 
-```cpp
+
 #define LED_PIN 2
 
 void setup() {
@@ -116,5 +116,66 @@ void loop() {
   delay(1000);
 
   digitalWrite(LED_PIN, LOW);
+  delay(1000);
+}
+
+---
+
+## Date
+September 11, 2026
+
+---
+
+## Day 2 – MQ-2 Gas Sensor Testing and Calibration
+
+### Objective
+
+The objective of this activity was to test and verify the functionality of the MQ-2 gas sensor module using the ESP32 development board to ensure it is fully operational and capable of detecting smoke or flammable gases.
+
+---
+
+## 1. Connecting the MQ-2 Sensor
+
+I connected the MQ-2 gas sensor module to the ESP32 using Female-to-Female (F-F) DuPont jumper wires.
+
+- VCC to **VIN**
+- GND to **GND**
+- AO to **D34** (GPIO 34)
+
+### Initial Observation
+
+- MQ-2 powered on: **YES**
+- Wiring configuration: **Completed**
+- Analog pin assigned: **D34**
+
+---
+
+## 2. Configuring the Arduino IDE Serial Monitor
+
+To properly read the analog output data from the sensor without getting garbled or square characters, I set the baud rate in the Arduino IDE Serial Monitor to match the program configuration.
+
+### Configuration Details
+
+- Baud Rate: **115200**
+- Port: **COM3**
+
+---
+
+## 3. Creating the MQ-2 Test Program
+
+To verify that the ESP32 could read analog data from the MQ-2 sensor, I created and uploaded a monitoring program.
+
+```cpp
+const int mq2Pin = 34; // Nakakonekta ang AO sa D34
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+}
+
+void loop() {
+  int sensorValue = analogRead(mq2Pin);
+  Serial.print("MQ-2 Value: ");
+  Serial.println(sensorValue);
   delay(1000);
 }
