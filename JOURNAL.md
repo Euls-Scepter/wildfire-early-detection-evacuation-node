@@ -181,3 +181,93 @@ void loop() {
   delay(1000);
 }
 ```
+
+---
+
+---
+
+## Date
+September 12, 2026
+
+---
+
+## Day 3 – TMP36 Temperature Sensor Testing and Calibration
+
+### Objective
+
+The objective of this activity was to test and verify the functionality of the TMP36 temperature sensor using the ESP32. The sensor was tested to determine whether it could provide temperature readings through its analog output and respond appropriately to changes in temperature.
+
+---
+
+## 1. Connecting the TMP36 Sensor
+
+I connected the TMP36 temperature sensor to the ESP32 using Female-to-Female (F-F) DuPont jumper wires and a breadboard for the common ground connection.
+
+The connections were configured as follows:
+
+- **+Vs → ESP32 3V3**
+- **Vout → ESP32 GPIO35 (D35)**
+- **GND → Breadboard negative (-) rail**
+- **ESP32 GND → Breadboard negative (-) rail**
+
+GPIO35 was used as the analog input for reading the TMP36 output voltage.
+
+### Initial Observation
+
+- TMP36 powered: **YES**
+- TMP36 analog output: **Detected**
+- Analog input pin: **GPIO35**
+- Common ground connection: **Completed**
+
+---
+
+## 2. Creating the Combined MQ-2 and TMP36 Test Program
+
+The MQ-2 and TMP36 were tested together using the ESP32.
+
+The TMP36 was configured using the ESP32 ADC with 0 dB attenuation because its output voltage is relatively low.
+
+```cpp
+const int mq2Pin = 34;
+const int tmp36Pin = 35;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  analogSetPinAttenuation(tmp36Pin, ADC_0db);
+
+  Serial.println("Wildfire Detection Node");
+  Serial.println("MQ-2 + TMP36 Calibrated Test");
+  Serial.println("--------------------------------");
+}
+
+void loop() {
+  int mq2Value = analogRead(mq2Pin);
+
+  int tmp36Raw = analogRead(tmp36Pin);
+
+  uint32_t tmp36mV = analogReadMilliVolts(tmp36Pin);
+
+  float tmp36Voltage = tmp36mV / 1000.0;
+
+  float temperatureC = (tmp36mV - 500) / 10.0;
+
+  Serial.print("MQ-2 Value: ");
+  Serial.print(mq2Value);
+
+  Serial.print(" | TMP36 Raw: ");
+  Serial.print(tmp36Raw);
+
+  Serial.print(" | TMP36 Voltage: ");
+  Serial.print(tmp36Voltage, 3);
+  Serial.print(" V");
+
+  Serial.print(" | Temperature: ");
+  Serial.print(temperatureC, 2);
+  Serial.println(" °C");
+
+  delay(1000);
+}
+```
+
