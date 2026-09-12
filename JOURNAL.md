@@ -288,3 +288,49 @@ TMP36 Voltage: 0.834 V | Temperature: 33.4 °C
 TMP36 Voltage: 0.820 V | Temperature: 32.0 °C
 TMP36 Voltage: 0.783 V | Temperature: 28.3 °C
 TMP36 Voltage: 0.811 V | Temperature: 31.1 °C
+```
+
+The readings demonstrated that the TMP36 was producing measurable analog voltage and that the ESP32 was successfully converting the sensor output into temperature values.
+
+---
+
+## 4. Hand-Warming Test
+
+A hand-warming test was performed to verify whether the TMP36 would respond to an increase in temperature.
+
+The sensor was warmed by holding it with the hand. During the test, the temperature reading increased and reached approximately 40°C.
+
+The readings were not completely consistent because the sensor temperature changed depending on hand contact, heat transfer, airflow, and the surrounding environment.
+
+The important observation was that the temperature reading increased when the sensor was warmed and gradually decreased when the sensor was released.
+
+Result
+Response to hand warming: Detected
+Temperature increase: Observed
+Sensor response: Working
+
+---
+
+## 5. Outdoor Warming Test
+
+The TMP36 was also tested outside the house. The sensor was exposed to the warmer outdoor environment for several seconds.
+
+The following readings were observed:
+```text
+TMP36 Voltage: 0.723 V | Temperature: 22.3 °C
+TMP36 Voltage: 0.821 V | Temperature: 32.1 °C
+TMP36 Voltage: 0.847 V | Temperature: 34.7 °C
+TMP36 Voltage: 0.874 V | Temperature: 37.4 °C
+TMP36 Voltage: 0.895 V | Temperature: 39.5 °C
+TMP36 Voltage: 1.008 V | Temperature: 50.8 °C
+```
+
+The readings increased as the sensor was exposed to heat.
+
+The approximately 50.8°C reading was considered a heat-response result rather than an exact measurement of the surrounding air temperature because direct environmental heating can cause the sensor itself to become warmer than the actual ambient air.
+
+---
+
+## 6. TMP36 Temperature Conversion
+
+The TMP36 temperature was calculated using the standard voltage-to-temperature relationship:
