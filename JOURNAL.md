@@ -270,4 +270,21 @@ void loop() {
   delay(1000);
 }
 ```
+3. Indoor Testing
+
+The TMP36 was initially tested inside the room under normal indoor conditions.
+
+The Serial Monitor produced temperature readings generally within the range of approximately 28°C to 33°C.
+
+Example readings included:
+
+TMP36 Voltage: 0.790 V | Temperature: 29.0 °C
+TMP36 Voltage: 0.806 V | Temperature: 30.6 °C
+TMP36 Voltage: 0.834 V | Temperature: 33.4 °C
+TMP36 Voltage: 0.820 V | Temperature: 32.0 °C
+TMP36 Voltage: 0.783 V | Temperature: 28.3 °C
+TMP36 Voltage: 0.811 V | Temperature: 31.1 °C
+
+The readings demonstrated that the TMP36 was producing measurable analog voltage and that the ESP32 was successfully converting the sensor output into temperature values.
+
 
