@@ -334,3 +334,30 @@ The approximately 50.8°C reading was considered a heat-response result rather t
 ## 6. TMP36 Temperature Conversion
 
 The TMP36 temperature was calculated using the standard voltage-to-temperature relationship:
+Temperature (°C) = (Voltage - 0.500) × 100
+
+For example:
+Voltage = 0.790 V
+
+Temperature = (0.790 - 0.500) × 100
+Temperature = 29.0 °C
+
+This confirmed that the voltage readings were being converted into temperature values correctly.
+
+---
+
+## 7. TMP36 Testing Result
+
+The TMP36 successfully produced analog readings through GPIO35 and responded to changes in temperature.
+
+The sensor demonstrated the expected behavior during indoor, hand-warming, and outdoor warming tests.
+
+Result
+TMP36 powered: YES
+Analog output detected: YES
+ESP32 GPIO35 reading: Working
+Voltage measurement: Working
+Temperature conversion: Working
+Response to hand warming: Detected
+Response to outdoor heat: Detected
+TMP36 hardware test: PASSED
