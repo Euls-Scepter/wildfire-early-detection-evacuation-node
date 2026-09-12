@@ -287,4 +287,17 @@ TMP36 Voltage: 0.811 V | Temperature: 31.1 °C
 
 The readings demonstrated that the TMP36 was producing measurable analog voltage and that the ESP32 was successfully converting the sensor output into temperature values.
 
+4. Hand-Warming Test
 
+A hand-warming test was performed to verify whether the TMP36 would respond to an increase in temperature.
+
+The sensor was warmed by holding it with the hand. During the test, the temperature reading increased and reached approximately 40°C.
+
+The readings were not completely consistent because the sensor temperature changed depending on hand contact, heat transfer, airflow, and the surrounding environment.
+
+The important observation was that the temperature reading increased when the sensor was warmed and gradually decreased when the sensor was released.
+
+Result
+Response to hand warming: Detected
+Temperature increase: Observed
+Sensor response: Working
