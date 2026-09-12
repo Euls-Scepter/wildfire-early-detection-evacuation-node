@@ -270,7 +270,9 @@ void loop() {
   delay(1000);
 }
 ```
-3. Indoor Testing
+---
+
+##3. Indoor Testing
 
 The TMP36 was initially tested inside the room under normal indoor conditions.
 
