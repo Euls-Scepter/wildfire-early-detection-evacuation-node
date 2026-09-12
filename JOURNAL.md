@@ -336,11 +336,13 @@ The approximately 50.8°C reading was considered a heat-response result rather t
 The TMP36 temperature was calculated using the standard voltage-to-temperature relationship:
 Temperature (°C) = (Voltage - 0.500) × 100
 
+```
 For example:
 Voltage = 0.790 V
 
 Temperature = (0.790 - 0.500) × 100
 Temperature = 29.0 °C
+```
 
 This confirmed that the voltage readings were being converted into temperature values correctly.
 
@@ -361,3 +363,52 @@ Temperature conversion: Working
 Response to hand warming: Detected
 Response to outdoor heat: Detected
 TMP36 hardware test: PASSED
+
+---
+
+## 8. Calibration and Accuracy Notes
+
+The TMP36 was considered functionally validated and ready for integration into the Wildfire Early-Detection & Evacuation Node prototype.
+
+The testing focused on verifying the sensor's functionality and response to temperature changes. Further calibration can be performed by comparing the TMP36 readings with a reference thermometer.
+
+For the final system, the readings may also be improved through averaging and filtering to reduce sudden fluctuations.
+
+---
+
+## 9. Planned Fire Detection Logic
+
+The TMP36 will not be used as the only condition for triggering the wildfire alarm.
+
+The system will require both the TMP36 temperature threshold and MQ-2 smoke/gas threshold to be reached before considering the situation as a possible fire event.
+
+The ESP32-CAM will then provide an additional visual verification layer.
+
+```
+TMP36 Temperature HIGH
+        +
+MQ-2 Smoke/Gas HIGH
+        ↓
+   Possible Fire
+        ↓
+ ESP32-CAM Verification
+        ↓
+ Visual Confirmation
+        ↓
+   Fire Confirmed
+        ↓
+ DANGER / ALERT
+```
+
+This multi-sensor approach is intended to reduce false alarms caused by temperature increases or smoke/gas readings alone.
+
+---
+
+## Overall Day 3 Result
+
+TMP36 testing was successfully completed.
+
+The TMP36 was confirmed to be functioning correctly with the ESP32 and was demonstrated to respond to changes in temperature.
+
+The sensor is now ready for integration into the multi-sensor wildfire detection system.
+
