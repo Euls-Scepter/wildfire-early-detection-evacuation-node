@@ -1,1 +1,4096 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <HardwareSerial.h>
 
+// =====================================================
+// WILDFIRE EARLY DETECTION NODE (WEDEN)
+// WITH AI VERIFICATION + SUPABASE + STATUS LEDs
+// =====================================================
+//
+// STATUS LED:
+//
+// GREEN  = SAFE
+// YELLOW = WARNING / VERIFYING
+// RED    = AI CONFIRMED FIRE / BLINKING
+//
+// MQ-2 HIGH + TMP36 HIGH
+//       |
+//       v
+// 3 CONSECUTIVE READINGS
+//       |
+//       v
+// ESP32-CAM CAPTURE
+//       |
+//       v
+// PYTHON SAINet AI
+//       |
+//       +---- NO_FIRE ---> NO SMS / NO CALL
+//       |
+//       +---- FIRE ------> RED BLINK -> SMS -> CALL
+//       |
+//       +---- ERROR -----> NO SMS / NO CALL
+//
+// SUPABASE:
+// sensor_readings = sensor telemetry
+// alerts          = AI verification results
+// =====================================================
+
+
+// =====================================================
+// WIFI
+// =====================================================
+
+const char* WIFI_SSID = "Infinix HOT 60 Pro";
+
+// KEEP YOUR EXISTING WIFI PASSWORD HERE
+const char* WIFI_PASSWORD = "bahalakadiha";
+
+
+// =====================================================
+// SUPABASE
+// =====================================================
+
+const char* SUPABASE_URL =
+  "https://sbbhxzzsqgbsqhhgacco.supabase.co";
+
+// KEEP YOUR EXISTING SUPABASE ANON KEY HERE
+const char* SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNiYmh4enpzcWdic3FoaGdhY2NvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEzMzM1MTIsImV4cCI6MjEwNjkwOTUxMn0.hR0pDOGZjV2Ndj_QC9wyLn-pIymiG5pDZnqQSo2ySbM";
+
+const char* DEVICE_ID = "weden-01";
+
+const char* SUPABASE_TABLE =
+  "sensor_readings";
+
+const char* SUPABASE_ALERTS_TABLE =
+  "alerts";
+
+
+// =====================================================
+// ESP32-CAM
+// =====================================================
+//
+// IMPORTANT:
+// Check the ESP32-CAM Serial Monitor.
+// Make sure its actual IP is:
+// 10.87.8.186
+//
+// If the ESP32-CAM gets another IP after reconnecting,
+// change CAMERA_IP below.
+// =====================================================
+
+const char* CAMERA_IP = "10.87.8.186";
+
+const char* CAMERA_URL =
+  "http://10.87.8.186/capture";
+
+
+// =====================================================
+// PYTHON SAINet AI SERVER
+// =====================================================
+
+const char* AI_SERVER_IP = "10.87.8.245";
+
+const uint16_t AI_SERVER_PORT = 5000;
+
+const char* AI_SERVER_PATH = "/verify";
+
+const char* AI_VERIFY_URL =
+  "http://10.87.8.245:5000/verify";
+
+
+// =====================================================
+// A7670E
+// =====================================================
+
+HardwareSerial A7670E(1);
+
+#define A7670_RX 26
+#define A7670_TX 27
+
+// KEEP YOUR EXISTING PHONE NUMBER HERE
+const char* PHONE_NUMBER =
+  "+639816553162";
+
+
+// =====================================================
+// SENSOR PINS
+// =====================================================
+
+#define MQ2_PIN 34
+#define TMP36_PIN 35
+
+
+// =====================================================
+// STATUS LED PINS
+// =====================================================
+
+#define GREEN_LED_PIN 18
+#define YELLOW_LED_PIN 19
+#define RED_LED_PIN 23
+
+
+// =====================================================
+// MQ-2 CONFIG
+// =====================================================
+
+#define MQ2_DIVIDER_TOP_OHMS 10000.0f
+#define MQ2_DIVIDER_BOTTOM_OHMS 20000.0f
+
+#define ADC_SAMPLES 64
+
+
+// =====================================================
+// TMP36 CONFIG
+// =====================================================
+
+#define TMP36_OFFSET_C 0.0f
+#define TMP36_SAMPLES 32
+
+
+// =====================================================
+// LCD
+// =====================================================
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+
+// =====================================================
+// FIRE THRESHOLDS
+// =====================================================
+
+#define MQ2_THRESHOLD 200
+#define TEMP_THRESHOLD 40.0
+
+
+// =====================================================
+// SENSOR TIMING
+// =====================================================
+
+unsigned long lastSensorRead = 0;
+
+const unsigned long SENSOR_INTERVAL = 1000;
+
+const unsigned long SENSOR_WARMUP_MS = 10000;
+
+
+// =====================================================
+// FIRE CONFIRMATION
+// =====================================================
+
+int fireConfirmationCount = 0;
+
+const int REQUIRED_FIRE_CONFIRMATIONS = 3;
+
+
+// =====================================================
+// ALARM COOLDOWN
+// =====================================================
+
+bool alarmRunning = false;
+
+bool alarmCooldownActive = false;
+
+unsigned long lastAlarmTime = 0;
+
+const unsigned long ALARM_COOLDOWN_MS = 10000;
+
+
+// =====================================================
+// FIRE LED BLINK
+// =====================================================
+
+bool fireLedBlinking = false;
+
+bool redLedState = false;
+
+unsigned long lastRedBlink = 0;
+
+const unsigned long RED_BLINK_INTERVAL = 500;
+
+
+// =====================================================
+// AI RESULT
+// =====================================================
+
+enum AIResult {
+
+  AI_FIRE,
+
+  AI_NO_FIRE,
+
+  AI_ERROR
+};
+
+
+// =====================================================
+// FUNCTION DECLARATIONS
+// =====================================================
+
+void readSensors();
+
+float readTMP36();
+
+uint32_t readAverageRaw(
+  uint8_t pin);
+
+uint32_t readAverageMilliVolts(
+  uint8_t pin);
+
+bool supabasePost(
+  const char* table,
+  const String& json);
+
+bool sendToSupabase(
+  int mq2Value,
+  float temperature,
+  bool mq2High,
+  bool tempHigh,
+  const char* status);
+
+bool sendAlertToSupabase(
+  const char* aiResult,
+  int mq2Value,
+  float temperature,
+  bool smsSent,
+  bool callMade);
+
+AIResult verifyCamera();
+
+bool sendSMS();
+
+bool makeCall();
+
+void startWildfireAlarm(
+  int mq2Value,
+  float temperature);
+
+void connectWiFi();
+
+void printA7670Response(
+  unsigned long waitTime);
+
+void updateLCD(
+  int mq2Value,
+  float temperature,
+  const char* status);
+
+void updateFireLEDBlink();
+
+void setStatusLEDs(
+  bool mq2High,
+  bool tempHigh);
+
+bool testCameraConnection();
+
+bool testAIServerConnection();
+
+
+// =====================================================
+// DELAY WITH FIRE LED BLINK
+// =====================================================
+
+void delayWithFireBlink(
+  unsigned long duration) {
+
+  unsigned long startTime =
+    millis();
+
+  while (
+    millis() - startTime < duration) {
+
+    updateFireLEDBlink();
+
+    delay(10);
+  }
+}
+
+
+// =====================================================
+// LED STATUS
+// =====================================================
+
+void setStatusLEDs(
+  bool mq2High,
+  bool tempHigh) {
+
+  // SAFE
+
+  if (!mq2High && !tempHigh) {
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+    return;
+  }
+
+
+  // WARNING
+
+  if (
+    (mq2High && !tempHigh) ||
+    (!mq2High && tempHigh)) {
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+    return;
+  }
+
+
+  // BOTH HIGH / VERIFYING
+
+  if (mq2High && tempHigh) {
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+    return;
+  }
+}
+
+
+// =====================================================
+// FIRE LED BLINK
+// =====================================================
+
+void updateFireLEDBlink() {
+
+  if (!fireLedBlinking) {
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+    redLedState = false;
+
+    return;
+  }
+
+
+  if (
+    millis() - lastRedBlink >=
+    RED_BLINK_INTERVAL) {
+
+    lastRedBlink = millis();
+
+    redLedState =
+      !redLedState;
+
+    digitalWrite(
+      RED_LED_PIN,
+      redLedState ?
+      HIGH :
+      LOW);
+  }
+}
+
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  delay(1000);
+
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    " WILDFIRE EARLY DETECTION NODE");
+
+  Serial.println(
+    " AI + SUPABASE + STATUS LED");
+
+  Serial.println(
+    "================================");
+
+
+  // ===================================================
+  // SENSOR
+  // ===================================================
+
+  pinMode(
+    MQ2_PIN,
+    INPUT);
+
+  pinMode(
+    TMP36_PIN,
+    INPUT);
+
+
+  // ===================================================
+  // LED
+  // ===================================================
+
+  pinMode(
+    GREEN_LED_PIN,
+    OUTPUT);
+
+  pinMode(
+    YELLOW_LED_PIN,
+    OUTPUT);
+
+  pinMode(
+    RED_LED_PIN,
+    OUTPUT);
+
+
+  digitalWrite(
+    GREEN_LED_PIN,
+    HIGH);
+
+  digitalWrite(
+    YELLOW_LED_PIN,
+    LOW);
+
+  digitalWrite(
+    RED_LED_PIN,
+    LOW);
+
+
+  // ===================================================
+  // ADC
+  // ===================================================
+
+  analogReadResolution(12);
+
+  analogSetPinAttenuation(
+    MQ2_PIN,
+    ADC_11db);
+
+  analogSetPinAttenuation(
+    TMP36_PIN,
+    ADC_11db);
+
+
+  // ===================================================
+  // LCD
+  // ===================================================
+
+  Wire.begin(
+    21,
+    22);
+
+  lcd.init();
+
+  lcd.backlight();
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "Wildfire Node");
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Starting...");
+
+  delay(2000);
+
+
+  // ===================================================
+  // MQ-2 WARMUP
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "MQ-2 warming up for 10 seconds...");
+
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "MQ2 Warming Up");
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Please wait...");
+
+
+  unsigned long warmupStart =
+    millis();
+
+
+  while (
+    millis() - warmupStart <
+    SENSOR_WARMUP_MS) {
+
+    unsigned long elapsed =
+      millis() - warmupStart;
+
+    unsigned long remaining =
+      (SENSOR_WARMUP_MS -
+       elapsed +
+       999) /
+      1000;
+
+
+    Serial.print(
+      "MQ-2 warm-up: ");
+
+    Serial.print(
+      remaining);
+
+    Serial.println(
+      "s");
+
+
+    delay(1000);
+  }
+
+
+  Serial.println(
+    "MQ-2 warm-up complete.");
+
+
+  // ===================================================
+  // A7670E
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "Starting A7670E...");
+
+
+  A7670E.begin(
+    115200,
+    SERIAL_8N1,
+    A7670_RX,
+    A7670_TX);
+
+
+  delay(1000);
+
+
+  Serial.println(
+    "A7670E UART READY.");
+
+
+  // ===================================================
+  // WIFI
+  // ===================================================
+
+  connectWiFi();
+
+
+  // ===================================================
+  // SYSTEM CONFIG
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       SYSTEM CONFIGURATION");
+
+  Serial.println(
+    "================================");
+
+
+  Serial.print(
+    "MQ-2 PIN: GPIO");
+
+  Serial.println(
+    MQ2_PIN);
+
+
+  Serial.print(
+    "MQ-2 THRESHOLD: ");
+
+  Serial.println(
+    MQ2_THRESHOLD);
+
+
+  Serial.println(
+    "MQ-2 VCC: 5V");
+
+  Serial.println(
+    "MQ-2 AO DIVIDER: 10k/20k");
+
+
+  Serial.print(
+    "TMP36 PIN: GPIO");
+
+  Serial.println(
+    TMP36_PIN);
+
+
+  Serial.println(
+    "TMP36 VCC: 3.3V");
+
+
+  Serial.print(
+    "TEMP THRESHOLD: ");
+
+  Serial.print(
+    TEMP_THRESHOLD,
+    1);
+
+  Serial.println(
+    " C");
+
+
+  Serial.print(
+    "GREEN LED: GPIO");
+
+  Serial.println(
+    GREEN_LED_PIN);
+
+
+  Serial.print(
+    "YELLOW LED: GPIO");
+
+  Serial.println(
+    YELLOW_LED_PIN);
+
+
+  Serial.print(
+    "RED LED: GPIO");
+
+  Serial.println(
+    RED_LED_PIN);
+
+
+  Serial.print(
+    "A7670E RX: GPIO");
+
+  Serial.println(
+    A7670_RX);
+
+
+  Serial.print(
+    "A7670E TX: GPIO");
+
+  Serial.println(
+    A7670_TX);
+
+
+  Serial.print(
+    "ESP32-CAM IP: ");
+
+  Serial.println(
+    CAMERA_IP);
+
+
+  Serial.print(
+    "CAMERA URL: ");
+
+  Serial.println(
+    CAMERA_URL);
+
+
+  Serial.print(
+    "AI VERIFY URL: ");
+
+  Serial.println(
+    AI_VERIFY_URL);
+
+
+  Serial.print(
+    "SUPABASE TABLE: ");
+
+  Serial.println(
+    SUPABASE_TABLE);
+
+
+  Serial.print(
+    "SUPABASE ALERTS TABLE: ");
+
+  Serial.println(
+    SUPABASE_ALERTS_TABLE);
+
+
+  Serial.println(
+    "SERVO: DISABLED");
+
+  Serial.println(
+    "AI VERIFICATION: ENABLED");
+
+  Serial.println(
+    "SMS: ENABLED");
+
+  Serial.println(
+    "CALL: ENABLED");
+
+
+  Serial.print(
+    "FIRE CONFIRMATIONS: ");
+
+  Serial.println(
+    REQUIRED_FIRE_CONFIRMATIONS);
+
+
+  Serial.print(
+    "ALARM COOLDOWN: ");
+
+  Serial.print(
+    ALARM_COOLDOWN_MS / 1000);
+
+  Serial.println(
+    " seconds");
+
+
+  Serial.println(
+    "RED LED BLINK: ENABLED");
+
+
+  Serial.print(
+    "RED BLINK INTERVAL: ");
+
+  Serial.print(
+    RED_BLINK_INTERVAL);
+
+  Serial.println(
+    " ms");
+
+
+  Serial.println(
+    "================================");
+
+
+  // ===================================================
+  // READY
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "SYSTEM READY.");
+
+  Serial.println(
+    "SENSOR MONITORING STARTED");
+
+
+  Serial.println();
+
+  Serial.print(
+    "MQ2 >= ");
+
+  Serial.print(
+    MQ2_THRESHOLD);
+
+  Serial.print(
+    " + TMP36 >= ");
+
+  Serial.print(
+    TEMP_THRESHOLD,
+    0);
+
+  Serial.println(
+    "C = AI VERIFICATION");
+
+
+  Serial.println();
+
+  Serial.println(
+    "Supabase telemetry ENABLED.");
+
+
+  Serial.println();
+
+  Serial.println(
+    "LED STATUS:");
+
+  Serial.println(
+    "GREEN  = SAFE");
+
+  Serial.println(
+    "YELLOW = WARNING / VERIFYING");
+
+  Serial.println(
+    "RED    = AI CONFIRMED FIRE / BLINKING");
+
+
+  // ===================================================
+  // LCD
+  // ===================================================
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "MQ2:----");
+
+  lcd.setCursor(
+    9,
+    0);
+
+  lcd.print(
+    "T:--.-C");
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "STATUS:SAFE");
+
+
+  digitalWrite(
+    GREEN_LED_PIN,
+    HIGH);
+
+  digitalWrite(
+    YELLOW_LED_PIN,
+    LOW);
+
+  digitalWrite(
+    RED_LED_PIN,
+    LOW);
+
+
+  lastSensorRead =
+    millis() -
+    SENSOR_INTERVAL;
+}
+
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop() {
+
+  updateFireLEDBlink();
+
+
+  if (
+    millis() - lastSensorRead >=
+    SENSOR_INTERVAL) {
+
+    lastSensorRead =
+      millis();
+
+    readSensors();
+  }
+}
+
+
+// =====================================================
+// READ SENSORS
+// =====================================================
+
+void readSensors() {
+
+  // ===================================================
+  // MQ-2
+  // ===================================================
+
+  int mq2Value =
+    readAverageRaw(
+      MQ2_PIN);
+
+
+  uint32_t mq2PinMv =
+    readAverageMilliVolts(
+      MQ2_PIN);
+
+
+  float mq2PinVoltage =
+    mq2PinMv /
+    1000.0f;
+
+
+  float mq2Voltage =
+    mq2PinVoltage *
+    (
+      (
+        MQ2_DIVIDER_TOP_OHMS +
+        MQ2_DIVIDER_BOTTOM_OHMS
+      )
+      /
+      MQ2_DIVIDER_BOTTOM_OHMS
+    );
+
+
+  // ===================================================
+  // TMP36
+  // ===================================================
+
+  float temperature =
+    readTMP36();
+
+
+  // ===================================================
+  // CONDITIONS
+  // ===================================================
+
+  bool mq2High =
+    mq2Value >= MQ2_THRESHOLD;
+
+
+  bool tempHigh =
+    temperature >= TEMP_THRESHOLD;
+
+
+  const char* status;
+
+
+  if (
+    !mq2High &&
+    !tempHigh) {
+
+    status = "SAFE";
+  }
+
+  else if (
+    (mq2High && !tempHigh) ||
+    (!mq2High && tempHigh)) {
+
+    status = "WARNING";
+  }
+
+  else {
+
+    status = "VERIFYING";
+  }
+
+
+  // ===================================================
+  // LED
+  // ===================================================
+
+  setStatusLEDs(
+    mq2High,
+    tempHigh);
+
+
+  // ===================================================
+  // SERIAL
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "--------------------------------");
+
+
+  Serial.print(
+    "MQ-2: ");
+
+  Serial.print(
+    mq2Value);
+
+
+  Serial.print(
+    " | MQ2: ");
+
+  Serial.print(
+    mq2High ?
+    "HIGH" :
+    "LOW");
+
+
+  Serial.print(
+    " | TMP36: ");
+
+  Serial.print(
+    temperature,
+    1);
+
+
+  Serial.print(
+    " C | TEMP: ");
+
+
+  Serial.print(
+    tempHigh ?
+    "HIGH" :
+    "LOW");
+
+
+  Serial.print(
+    " | STATUS: ");
+
+
+  Serial.println(
+    status);
+
+
+  Serial.print(
+    "MQ2 PIN: ");
+
+  Serial.print(
+    mq2PinVoltage,
+    3);
+
+
+  Serial.print(
+    " V | MQ2 AO: ");
+
+
+  Serial.print(
+    mq2Voltage,
+    3);
+
+
+  Serial.println(
+    " V");
+
+
+  // ===================================================
+  // SUPABASE TELEMETRY
+  // ===================================================
+
+  sendToSupabase(
+    mq2Value,
+    temperature,
+    mq2High,
+    tempHigh,
+    status);
+
+
+  // ===================================================
+  // BOTH HIGH
+  // ===================================================
+
+  if (
+    mq2High &&
+    tempHigh) {
+
+    fireConfirmationCount++;
+
+
+    Serial.print(
+      "BOTH HIGH - CONFIRMATION ");
+
+
+    Serial.print(
+      fireConfirmationCount);
+
+
+    Serial.print(
+      "/");
+
+
+    Serial.println(
+      REQUIRED_FIRE_CONFIRMATIONS);
+
+
+    updateLCD(
+      mq2Value,
+      temperature,
+      "VERIFYING");
+
+
+    // =================================================
+    // FIRE CONFIRMATION
+    // =================================================
+
+    if (
+      fireConfirmationCount >=
+      REQUIRED_FIRE_CONFIRMATIONS) {
+
+      Serial.println();
+
+      Serial.println(
+        "################################");
+
+      Serial.println(
+        "FIRE CONDITION CONFIRMED");
+
+      Serial.println(
+        "MQ-2 HIGH + TMP36 HIGH");
+
+      Serial.println(
+        "3 CONSECUTIVE READINGS");
+
+      Serial.println(
+        "################################");
+
+
+      digitalWrite(
+        GREEN_LED_PIN,
+        LOW);
+
+      digitalWrite(
+        YELLOW_LED_PIN,
+        HIGH);
+
+      digitalWrite(
+        RED_LED_PIN,
+        LOW);
+
+
+      if (!alarmRunning) {
+
+        bool cooldownFinished =
+          !alarmCooldownActive ||
+          millis() - lastAlarmTime >=
+          ALARM_COOLDOWN_MS;
+
+
+        if (cooldownFinished) {
+
+          alarmRunning = true;
+
+
+          // =========================================
+          // AI VERIFICATION
+          // =========================================
+
+          AIResult result =
+            verifyCamera();
+
+
+          // Cooldown only for valid AI result
+
+          if (
+            result == AI_FIRE ||
+            result == AI_NO_FIRE) {
+
+            alarmCooldownActive = true;
+
+            lastAlarmTime =
+              millis();
+          }
+
+
+          // =========================================
+          // AI FIRE
+          // =========================================
+
+          if (
+            result == AI_FIRE) {
+
+            Serial.println();
+
+            Serial.println(
+              "AI RESULT: FIRE");
+
+            Serial.println(
+              "RED LED: BLINKING");
+
+            Serial.println(
+              "AI CONFIRMED FIRE");
+
+
+            digitalWrite(
+              GREEN_LED_PIN,
+              LOW);
+
+            digitalWrite(
+              YELLOW_LED_PIN,
+              LOW);
+
+
+            fireLedBlinking =
+              true;
+
+            redLedState =
+              true;
+
+            lastRedBlink =
+              millis();
+
+
+            digitalWrite(
+              RED_LED_PIN,
+              HIGH);
+
+
+            startWildfireAlarm(
+              mq2Value,
+              temperature);
+          }
+
+
+          // =========================================
+          // AI NO FIRE
+          // =========================================
+
+          else if (
+            result == AI_NO_FIRE) {
+
+            fireLedBlinking =
+              false;
+
+            redLedState =
+              false;
+
+
+            digitalWrite(
+              RED_LED_PIN,
+              LOW);
+
+
+            digitalWrite(
+              GREEN_LED_PIN,
+              LOW);
+
+            digitalWrite(
+              YELLOW_LED_PIN,
+              HIGH);
+
+
+            Serial.println(
+              "AI says NO FIRE.");
+
+            Serial.println(
+              "No SMS sent.");
+
+            Serial.println(
+              "No call made.");
+
+
+            sendAlertToSupabase(
+              "NO_FIRE",
+              mq2Value,
+              temperature,
+              false,
+              false);
+
+
+            lcd.clear();
+
+            lcd.setCursor(
+              0,
+              0);
+
+            lcd.print(
+              "AI: NO FIRE");
+
+            lcd.setCursor(
+              0,
+              1);
+
+            lcd.print(
+              "Monitoring...");
+
+
+            delay(2000);
+          }
+
+
+          // =========================================
+          // AI ERROR
+          // =========================================
+
+          else {
+
+            Serial.println();
+
+            Serial.println(
+              "AI RESULT: ERROR");
+
+
+            fireLedBlinking =
+              false;
+
+            redLedState =
+              false;
+
+
+            digitalWrite(
+              RED_LED_PIN,
+              LOW);
+
+
+            digitalWrite(
+              GREEN_LED_PIN,
+              LOW);
+
+            digitalWrite(
+              YELLOW_LED_PIN,
+              HIGH);
+
+
+            Serial.println(
+              "AI verification failed.");
+
+            Serial.println(
+              "NO SMS SENT.");
+
+            Serial.println(
+              "NO CALL MADE.");
+
+
+            sendAlertToSupabase(
+              "ERROR",
+              mq2Value,
+              temperature,
+              false,
+              false);
+
+
+            lcd.clear();
+
+            lcd.setCursor(
+              0,
+              0);
+
+            lcd.print(
+              "AI ERROR");
+
+            lcd.setCursor(
+              0,
+              1);
+
+            lcd.print(
+              "Retry Later");
+
+
+            delay(2000);
+          }
+
+
+          alarmRunning =
+            false;
+        }
+
+        else {
+
+          unsigned long elapsed =
+            millis() -
+            lastAlarmTime;
+
+
+          unsigned long remaining =
+            (
+              ALARM_COOLDOWN_MS -
+              elapsed
+            ) /
+            1000;
+
+
+          Serial.println();
+
+          Serial.println(
+            "ALARM COOLDOWN ACTIVE");
+
+
+          Serial.print(
+            "Remaining: ");
+
+
+          Serial.print(
+            remaining);
+
+
+          Serial.println(
+            " seconds");
+        }
+      }
+
+
+      fireConfirmationCount =
+        0;
+    }
+  }
+
+
+  // ===================================================
+  // MQ2 HIGH ONLY
+  // ===================================================
+
+  else if (mq2High) {
+
+    fireConfirmationCount =
+      0;
+
+
+    Serial.println(
+      "SMOKE HIGH - WARNING");
+
+
+    fireLedBlinking =
+      false;
+
+    redLedState =
+      false;
+
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+
+    updateLCD(
+      mq2Value,
+      temperature,
+      "WARNING");
+  }
+
+
+  // ===================================================
+  // TMP36 HIGH ONLY
+  // ===================================================
+
+  else if (tempHigh) {
+
+    fireConfirmationCount =
+      0;
+
+
+    Serial.println(
+      "TEMP HIGH - WARNING");
+
+
+    fireLedBlinking =
+      false;
+
+    redLedState =
+      false;
+
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+
+    updateLCD(
+      mq2Value,
+      temperature,
+      "WARNING");
+  }
+
+
+  // ===================================================
+  // BOTH NORMAL
+  // ===================================================
+
+  else {
+
+    fireConfirmationCount =
+      0;
+
+
+    Serial.println(
+      "SAFE");
+
+
+    fireLedBlinking =
+      false;
+
+    redLedState =
+      false;
+
+
+    digitalWrite(
+      GREEN_LED_PIN,
+      HIGH);
+
+    digitalWrite(
+      YELLOW_LED_PIN,
+      LOW);
+
+    digitalWrite(
+      RED_LED_PIN,
+      LOW);
+
+
+    updateLCD(
+      mq2Value,
+      temperature,
+      "SAFE");
+  }
+}
+
+
+// =====================================================
+// SUPABASE GENERIC POST
+// =====================================================
+
+bool supabasePost(
+  const char* table,
+  const String& json) {
+
+  if (
+    WiFi.status() !=
+    WL_CONNECTED) {
+
+    Serial.println(
+      "SUPABASE: WiFi disconnected.");
+
+    return false;
+  }
+
+
+  WiFiClientSecure client;
+
+  client.setInsecure();
+
+
+  HTTPClient http;
+
+
+  String url =
+    String(SUPABASE_URL) +
+    "/rest/v1/" +
+    table;
+
+
+  Serial.println();
+
+  Serial.print(
+    "SUPABASE [");
+
+  Serial.print(
+    table);
+
+  Serial.println(
+    "]: Sending...");
+
+
+  if (
+    !http.begin(
+      client,
+      url)) {
+
+    Serial.println(
+      "SUPABASE: HTTP begin FAILED.");
+
+    return false;
+  }
+
+
+  http.addHeader(
+    "apikey",
+    SUPABASE_ANON_KEY);
+
+
+  http.addHeader(
+    "Authorization",
+    String("Bearer ") +
+    SUPABASE_ANON_KEY);
+
+
+  http.addHeader(
+    "Content-Type",
+    "application/json");
+
+
+  http.addHeader(
+    "Prefer",
+    "return=minimal");
+
+
+  Serial.print(
+    "SUPABASE JSON: ");
+
+  Serial.println(
+    json);
+
+
+  int httpCode =
+    http.POST(
+      json);
+
+
+  Serial.print(
+    "SUPABASE HTTP CODE: ");
+
+  Serial.println(
+    httpCode);
+
+
+  if (
+    httpCode > 0) {
+
+    String response =
+      http.getString();
+
+
+    if (
+      response.length() > 0) {
+
+      Serial.print(
+        "SUPABASE RESPONSE: ");
+
+      Serial.println(
+        response);
+    }
+  }
+
+
+  http.end();
+
+
+  if (
+    httpCode >= 200 &&
+    httpCode < 300) {
+
+    Serial.println(
+      "SUPABASE: INSERT SUCCESS");
+
+    return true;
+  }
+
+
+  Serial.println(
+    "SUPABASE: INSERT FAILED");
+
+  return false;
+}
+
+
+// =====================================================
+// SUPABASE SENSOR
+// =====================================================
+
+bool sendToSupabase(
+  int mq2Value,
+  float temperature,
+  bool mq2High,
+  bool tempHigh,
+  const char* status) {
+
+  String json = "{";
+
+
+  json +=
+    "\"device_id\":\"";
+
+  json +=
+    DEVICE_ID;
+
+  json +=
+    "\",";
+
+
+  json +=
+    "\"mq2_value\":";
+
+  json +=
+    String(mq2Value);
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"temperature\":";
+
+  json +=
+    String(
+      temperature,
+      2);
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"mq2_high\":";
+
+  json +=
+    (
+      mq2High ?
+      "true" :
+      "false"
+    );
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"temp_high\":";
+
+  json +=
+    (
+      tempHigh ?
+      "true" :
+      "false"
+    );
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"status\":\"";
+
+  json +=
+    status;
+
+  json +=
+    "\"";
+
+
+  json +=
+    "}";
+
+
+  return supabasePost(
+    SUPABASE_TABLE,
+    json);
+}
+
+
+// =====================================================
+// SUPABASE AI ALERT
+// =====================================================
+
+bool sendAlertToSupabase(
+  const char* aiResult,
+  int mq2Value,
+  float temperature,
+  bool smsSent,
+  bool callMade) {
+
+  String json = "{";
+
+
+  json +=
+    "\"device_id\":\"";
+
+  json +=
+    DEVICE_ID;
+
+  json +=
+    "\",";
+
+
+  json +=
+    "\"ai_result\":\"";
+
+  json +=
+    aiResult;
+
+  json +=
+    "\",";
+
+
+  json +=
+    "\"mq2\":";
+
+  json +=
+    String(mq2Value);
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"temp_c\":";
+
+  json +=
+    String(
+      temperature,
+      2);
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"sms_sent\":";
+
+  json +=
+    (
+      smsSent ?
+      "true" :
+      "false"
+    );
+
+  json +=
+    ",";
+
+
+  json +=
+    "\"call_made\":";
+
+  json +=
+    (
+      callMade ?
+      "true" :
+      "false"
+    );
+
+
+  json +=
+    "}";
+
+
+  return supabasePost(
+    SUPABASE_ALERTS_TABLE,
+    json);
+}
+
+
+// =====================================================
+// LCD
+// =====================================================
+
+void updateLCD(
+  int mq2Value,
+  float temperature,
+  const char* status) {
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "                ");
+
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "MQ2:");
+
+  lcd.print(
+    mq2Value);
+
+
+  lcd.setCursor(
+    9,
+    0);
+
+  lcd.print(
+    "T:");
+
+  lcd.print(
+    temperature,
+    1);
+
+  lcd.print(
+    "C");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "                ");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "STATUS:");
+
+  lcd.print(
+    status);
+}
+
+
+// =====================================================
+// ADC RAW
+// =====================================================
+
+uint32_t readAverageRaw(
+  uint8_t pin) {
+
+  uint64_t total = 0;
+
+
+  for (
+    int i = 0;
+    i < ADC_SAMPLES;
+    i++) {
+
+    total +=
+      analogRead(pin);
+
+    delayMicroseconds(500);
+  }
+
+
+  return (
+    uint32_t)(
+      total /
+      ADC_SAMPLES
+    );
+}
+
+
+// =====================================================
+// ADC MILLIVOLT
+// =====================================================
+
+uint32_t readAverageMilliVolts(
+  uint8_t pin) {
+
+  uint64_t total = 0;
+
+
+  for (
+    int i = 0;
+    i < ADC_SAMPLES;
+    i++) {
+
+    total +=
+      analogReadMilliVolts(
+        pin);
+
+    delayMicroseconds(500);
+  }
+
+
+  return (
+    uint32_t)(
+      total /
+      ADC_SAMPLES
+    );
+}
+
+
+// =====================================================
+// TMP36
+// =====================================================
+
+float readTMP36() {
+
+  uint32_t totalRaw = 0;
+
+  uint64_t totalMv = 0;
+
+
+  for (
+    int i = 0;
+    i < TMP36_SAMPLES;
+    i++) {
+
+    totalRaw +=
+      analogRead(
+        TMP36_PIN);
+
+
+    totalMv +=
+      analogReadMilliVolts(
+        TMP36_PIN);
+
+
+    delayMicroseconds(500);
+  }
+
+
+  uint32_t raw =
+    totalRaw /
+    TMP36_SAMPLES;
+
+
+  float voltageMv =
+    (
+      float
+    )(
+      totalMv /
+      TMP36_SAMPLES
+    );
+
+
+  float temperature =
+    (
+      voltageMv -
+      500.0f
+    ) /
+    10.0f;
+
+
+  temperature +=
+    TMP36_OFFSET_C;
+
+
+  Serial.print(
+    "TMP36 RAW: ");
+
+  Serial.print(
+    raw);
+
+
+  Serial.print(
+    " | VOLTAGE: ");
+
+  Serial.print(
+    voltageMv,
+    0);
+
+
+  Serial.print(
+    " mV | TEMP: ");
+
+  Serial.print(
+    temperature,
+    1);
+
+
+  Serial.println(
+    " C");
+
+
+  return temperature;
+}
+
+
+// =====================================================
+// START WILDFIRE ALARM
+// =====================================================
+
+void startWildfireAlarm(
+  int mq2Value,
+  float temperature) {
+
+  Serial.println();
+
+  Serial.println(
+    "################################");
+
+  Serial.println(
+    "#       WILDFIRE CONFIRMED     #");
+
+  Serial.println(
+    "################################");
+
+
+  Serial.println(
+    "AI CONFIRMED FIRE.");
+
+  Serial.println(
+    "Starting emergency alert.");
+
+
+  // ===================================================
+  // RED LED
+  // ===================================================
+
+  digitalWrite(
+    GREEN_LED_PIN,
+    LOW);
+
+  digitalWrite(
+    YELLOW_LED_PIN,
+    LOW);
+
+
+  fireLedBlinking =
+    true;
+
+
+  // ===================================================
+  // LCD
+  // ===================================================
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "FIRE CONFIRMED");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Sending SMS...");
+
+
+  // ===================================================
+  // SMS
+  // ===================================================
+
+  bool smsSuccess =
+    sendSMS();
+
+
+  if (smsSuccess) {
+
+    Serial.println(
+      "SMS ALERT SENT.");
+  }
+
+  else {
+
+    Serial.println(
+      "SMS FAILED.");
+  }
+
+
+  // ===================================================
+  // SUPABASE FIRE LOG
+  // ===================================================
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "FIRE CONFIRMED");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Logging alert...");
+
+
+  sendAlertToSupabase(
+    "FIRE",
+    mq2Value,
+    temperature,
+    smsSuccess,
+    false);
+
+
+  // ===================================================
+  // CALL
+  // ===================================================
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "FIRE CONFIRMED");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Calling...");
+
+
+  Serial.println();
+
+  Serial.println(
+    "FIRE CONFIRMED");
+
+  Serial.println(
+    "CALLING OFFICIALS...");
+
+
+  delayWithFireBlink(
+    2000);
+
+
+  bool callSuccess =
+    makeCall();
+
+
+  if (callSuccess) {
+
+    Serial.println(
+      "CALL PROCESS COMPLETE.");
+  }
+
+  else {
+
+    Serial.println(
+      "CALL PROCESS FAILED.");
+  }
+
+
+  // ===================================================
+  // STOP RED BLINK
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "Returning to normal monitoring...");
+
+
+  fireLedBlinking =
+    false;
+
+  redLedState =
+    false;
+
+
+  digitalWrite(
+    RED_LED_PIN,
+    LOW);
+
+
+  lcd.clear();
+
+  lcd.setCursor(
+    0,
+    0);
+
+  lcd.print(
+    "System Ready");
+
+
+  lcd.setCursor(
+    0,
+    1);
+
+  lcd.print(
+    "Monitoring...");
+
+
+  delay(2000);
+}
+
+
+// =====================================================
+// TEST ESP32-CAM CONNECTION
+// =====================================================
+
+bool testCameraConnection() {
+
+  Serial.println();
+
+  Serial.println(
+    "[NETWORK] Testing ESP32-CAM connection...");
+
+
+  Serial.print(
+    "[NETWORK] Camera IP: ");
+
+  Serial.println(
+    CAMERA_IP);
+
+
+  WiFiClient testClient;
+
+
+  testClient.setTimeout(
+    5000);
+
+
+  if (
+    testClient.connect(
+      CAMERA_IP,
+      80)) {
+
+    Serial.println(
+      "[NETWORK] ESP32-CAM TCP: OK");
+
+    testClient.stop();
+
+    return true;
+  }
+
+
+  Serial.println(
+    "[NETWORK ERROR] Cannot reach ESP32-CAM.");
+
+  testClient.stop();
+
+  return false;
+}
+
+
+// =====================================================
+// TEST PYTHON AI SERVER CONNECTION
+// =====================================================
+
+bool testAIServerConnection() {
+
+  Serial.println();
+
+  Serial.println(
+    "[NETWORK] Testing Python AI server...");
+
+
+  Serial.print(
+    "[NETWORK] AI Server: ");
+
+  Serial.print(
+    AI_SERVER_IP);
+
+  Serial.print(
+    ":");
+
+  Serial.println(
+    AI_SERVER_PORT);
+
+
+  WiFiClient testClient;
+
+
+  testClient.setTimeout(
+    5000);
+
+
+  if (
+    testClient.connect(
+      AI_SERVER_IP,
+      AI_SERVER_PORT)) {
+
+    Serial.println(
+      "[NETWORK] Python AI TCP: OK");
+
+    testClient.stop();
+
+    return true;
+  }
+
+
+  Serial.println(
+    "[NETWORK ERROR] Cannot reach Python AI server.");
+
+  testClient.stop();
+
+  return false;
+}
+
+
+// =====================================================
+// CAMERA + AI VERIFICATION
+// =====================================================
+
+AIResult verifyCamera() {
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       CAMERA AI VERIFICATION");
+
+  Serial.println(
+    "================================");
+
+
+  // ===================================================
+  // WIFI
+  // ===================================================
+
+  if (
+    WiFi.status() !=
+    WL_CONNECTED) {
+
+    Serial.println(
+      "[AI] WiFi disconnected.");
+
+    Serial.println(
+      "[AI] Reconnecting...");
+
+
+    connectWiFi();
+
+
+    if (
+      WiFi.status() !=
+      WL_CONNECTED) {
+
+      Serial.println(
+        "[AI ERROR] WiFi reconnect FAILED.");
+
+      return AI_ERROR;
+    }
+  }
+
+
+  Serial.println(
+    "[AI] WiFi connection OK.");
+
+
+  Serial.print(
+    "[AI] Main ESP32 IP: ");
+
+  Serial.println(
+    WiFi.localIP());
+
+
+  // ===================================================
+  // NETWORK TEST CAMERA
+  // ===================================================
+
+  if (
+    !testCameraConnection()) {
+
+    Serial.println(
+      "[AI ERROR] ESP32-CAM is unreachable.");
+
+    Serial.println(
+      "[AI ERROR] Check CAMERA_IP.");
+
+    return AI_ERROR;
+  }
+
+
+  // ===================================================
+  // NETWORK TEST AI SERVER
+  // ===================================================
+
+  if (
+    !testAIServerConnection()) {
+
+    Serial.println(
+      "[AI ERROR] Python AI server is unreachable.");
+
+    Serial.println(
+      "[AI ERROR] Check laptop IP / Flask server.");
+
+    return AI_ERROR;
+  }
+
+
+  // ===================================================
+  // CAMERA CAPTURE RETRIES
+  // ===================================================
+
+  const int MAX_CAMERA_ATTEMPTS = 3;
+
+  uint8_t* imageBuffer = nullptr;
+
+  size_t totalRead = 0;
+
+
+  for (
+    int cameraAttempt = 1;
+    cameraAttempt <= MAX_CAMERA_ATTEMPTS;
+    cameraAttempt++) {
+
+    Serial.println();
+
+    Serial.println(
+      "--------------------------------");
+
+
+    Serial.print(
+      "[CAMERA] Capture attempt ");
+
+    Serial.print(
+      cameraAttempt);
+
+    Serial.print(
+      "/");
+
+    Serial.println(
+      MAX_CAMERA_ATTEMPTS);
+
+
+    Serial.print(
+      "[CAMERA] URL: ");
+
+    Serial.println(
+      CAMERA_URL);
+
+
+    HTTPClient cameraHttp;
+
+    WiFiClient cameraClient;
+
+
+    cameraHttp.setConnectTimeout(
+      10000);
+
+    cameraHttp.setTimeout(
+      20000);
+
+
+    if (
+      !cameraHttp.begin(
+        cameraClient,
+        CAMERA_URL)) {
+
+      Serial.println(
+        "[CAMERA ERROR] HTTP begin FAILED.");
+
+      if (
+        cameraAttempt <
+        MAX_CAMERA_ATTEMPTS) {
+
+        delay(1000);
+
+        continue;
+      }
+
+      return AI_ERROR;
+    }
+
+
+    int cameraCode =
+      cameraHttp.GET();
+
+
+    Serial.print(
+      "[CAMERA] HTTP CODE: ");
+
+    Serial.println(
+      cameraCode);
+
+
+    if (
+      cameraCode !=
+      HTTP_CODE_OK) {
+
+      Serial.print(
+        "[CAMERA ERROR] HTTP error: ");
+
+      Serial.println(
+        cameraCode);
+
+
+      cameraHttp.end();
+
+
+      if (
+        cameraAttempt <
+        MAX_CAMERA_ATTEMPTS) {
+
+        Serial.println(
+          "[CAMERA] Retrying...");
+
+        delay(1000);
+
+        continue;
+      }
+
+
+      return AI_ERROR;
+    }
+
+
+    int imageSize =
+      cameraHttp.getSize();
+
+
+    Serial.print(
+      "[CAMERA] Content-Length: ");
+
+    Serial.println(
+      imageSize);
+
+
+    // =================================================
+    // MAX JPEG SIZE
+    // =================================================
+
+    const size_t MAX_IMAGE_SIZE =
+      300000;
+
+
+    // =================================================
+    // NORMAL CONTENT-LENGTH
+    // =================================================
+
+    if (
+      imageSize > 0) {
+
+      if (
+        imageSize >
+        (int)MAX_IMAGE_SIZE) {
+
+        Serial.println(
+          "[CAMERA ERROR] Image too large.");
+
+        cameraHttp.end();
+
+
+        if (
+          cameraAttempt <
+          MAX_CAMERA_ATTEMPTS) {
+
+          delay(1000);
+
+          continue;
+        }
+
+
+        return AI_ERROR;
+      }
+
+
+      imageBuffer =
+        (uint8_t*)malloc(
+          imageSize);
+
+
+      if (
+        imageBuffer == nullptr) {
+
+        Serial.println(
+          "[CAMERA ERROR] Not enough RAM.");
+
+        cameraHttp.end();
+
+        return AI_ERROR;
+      }
+
+
+      WiFiClient* cameraStream =
+        cameraHttp.getStreamPtr();
+
+
+      totalRead = 0;
+
+
+      unsigned long imageStart =
+        millis();
+
+
+      while (
+        totalRead <
+        (size_t)imageSize &&
+        millis() -
+        imageStart <
+        20000) {
+
+        size_t availableBytes =
+          cameraStream->available();
+
+
+        if (
+          availableBytes > 0) {
+
+          size_t remaining =
+            imageSize -
+            totalRead;
+
+
+          size_t toRead =
+            availableBytes;
+
+
+          if (
+            toRead >
+            remaining) {
+
+            toRead =
+              remaining;
+          }
+
+
+          if (
+            toRead >
+            4096) {
+
+            toRead =
+              4096;
+          }
+
+
+          int bytesRead =
+            cameraStream->readBytes(
+              imageBuffer +
+              totalRead,
+              toRead);
+
+
+          if (
+            bytesRead > 0) {
+
+            totalRead +=
+              bytesRead;
+          }
+        }
+
+        else {
+
+          delay(2);
+
+          yield();
+        }
+      }
+
+
+      cameraHttp.end();
+
+
+      if (
+        totalRead ==
+        (size_t)imageSize) {
+
+        Serial.print(
+          "[CAMERA] Image downloaded: ");
+
+        Serial.print(
+          totalRead);
+
+        Serial.println(
+          " bytes");
+
+
+        break;
+      }
+
+
+      Serial.print(
+        "[CAMERA ERROR] Incomplete image: ");
+
+      Serial.print(
+        totalRead);
+
+      Serial.print(
+        " / ");
+
+      Serial.print(
+        imageSize);
+
+      Serial.println(
+        " bytes");
+
+
+      free(
+        imageBuffer);
+
+      imageBuffer =
+        nullptr;
+
+
+      if (
+        cameraAttempt <
+        MAX_CAMERA_ATTEMPTS) {
+
+        Serial.println(
+          "[CAMERA] Retrying capture...");
+
+        delay(1000);
+
+        continue;
+      }
+
+
+      return AI_ERROR;
+    }
+
+
+    // =================================================
+    // UNKNOWN CONTENT-LENGTH
+    // =================================================
+
+    Serial.println(
+      "[CAMERA] Content-Length unavailable.");
+
+    Serial.println(
+      "[CAMERA] Using dynamic JPEG buffer.");
+
+
+    const size_t INITIAL_BUFFER_SIZE =
+      65536;
+
+
+    imageBuffer =
+      (uint8_t*)malloc(
+        INITIAL_BUFFER_SIZE);
+
+
+    if (
+      imageBuffer == nullptr) {
+
+      Serial.println(
+        "[CAMERA ERROR] Initial buffer allocation failed.");
+
+      cameraHttp.end();
+
+      return AI_ERROR;
+    }
+
+
+    size_t bufferCapacity =
+      INITIAL_BUFFER_SIZE;
+
+
+    totalRead = 0;
+
+
+    WiFiClient* cameraStream =
+      cameraHttp.getStreamPtr();
+
+
+    unsigned long imageStart =
+      millis();
+
+
+    while (
+      millis() -
+      imageStart <
+      20000) {
+
+      while (
+        cameraStream->available()) {
+
+        uint8_t tempBuffer[2048];
+
+
+        int bytesRead =
+          cameraStream->read(
+            tempBuffer,
+            sizeof(tempBuffer));
+
+
+        if (
+          bytesRead <= 0) {
+
+          break;
+        }
+
+
+        // ---------------------------------------------
+        // Need more RAM?
+        // ---------------------------------------------
+
+        if (
+          totalRead +
+          bytesRead >
+          bufferCapacity) {
+
+          size_t newCapacity =
+            bufferCapacity * 2;
+
+
+          if (
+            newCapacity >
+            MAX_IMAGE_SIZE) {
+
+            newCapacity =
+              MAX_IMAGE_SIZE;
+          }
+
+
+          if (
+            totalRead +
+            bytesRead >
+            newCapacity) {
+
+            Serial.println(
+              "[CAMERA ERROR] JPEG exceeds maximum size.");
+
+            free(
+              imageBuffer);
+
+            imageBuffer =
+              nullptr;
+
+            cameraHttp.end();
+
+            return AI_ERROR;
+          }
+
+
+          uint8_t* newBuffer =
+            (uint8_t*)realloc(
+              imageBuffer,
+              newCapacity);
+
+
+          if (
+            newBuffer == nullptr) {
+
+            Serial.println(
+              "[CAMERA ERROR] Buffer expansion failed.");
+
+            free(
+              imageBuffer);
+
+            imageBuffer =
+              nullptr;
+
+            cameraHttp.end();
+
+            return AI_ERROR;
+          }
+
+
+          imageBuffer =
+            newBuffer;
+
+          bufferCapacity =
+            newCapacity;
+        }
+
+
+        memcpy(
+          imageBuffer +
+          totalRead,
+          tempBuffer,
+          bytesRead);
+
+
+        totalRead +=
+          bytesRead;
+      }
+
+
+      if (
+        !cameraStream->connected() &&
+        !cameraStream->available()) {
+
+        break;
+      }
+
+
+      delay(5);
+
+      yield();
+    }
+
+
+    cameraHttp.end();
+
+
+    if (
+      totalRead == 0) {
+
+      Serial.println(
+        "[CAMERA ERROR] No image data received.");
+
+      free(
+        imageBuffer);
+
+      imageBuffer =
+        nullptr;
+
+
+      if (
+        cameraAttempt <
+        MAX_CAMERA_ATTEMPTS) {
+
+        delay(1000);
+
+        continue;
+      }
+
+
+      return AI_ERROR;
+    }
+
+
+    Serial.print(
+      "[CAMERA] Dynamic image downloaded: ");
+
+    Serial.print(
+      totalRead);
+
+    Serial.println(
+      " bytes");
+
+
+    break;
+  }
+
+
+  // ===================================================
+  // FINAL IMAGE CHECK
+  // ===================================================
+
+  if (
+    imageBuffer == nullptr ||
+    totalRead == 0) {
+
+    Serial.println(
+      "[AI ERROR] No valid camera image.");
+
+    return AI_ERROR;
+  }
+
+
+  // ===================================================
+  // JPEG SIGNATURE CHECK
+  // ===================================================
+
+  if (
+    totalRead >= 2) {
+
+    if (
+      imageBuffer[0] != 0xFF ||
+      imageBuffer[1] != 0xD8) {
+
+      Serial.println(
+        "[CAMERA ERROR] Image does not look like JPEG.");
+
+      Serial.print(
+        "[CAMERA] First bytes: ");
+
+      Serial.print(
+        imageBuffer[0],
+        HEX);
+
+      Serial.print(
+        " ");
+
+      Serial.println(
+        imageBuffer[1],
+        HEX);
+
+
+      free(
+        imageBuffer);
+
+      return AI_ERROR;
+    }
+
+
+    Serial.println(
+      "[CAMERA] JPEG signature OK.");
+  }
+
+
+  // ===================================================
+  // SEND IMAGE TO AI SERVER
+  // ===================================================
+
+  const int MAX_AI_ATTEMPTS =
+    3;
+
+
+  for (
+    int attempt = 1;
+    attempt <= MAX_AI_ATTEMPTS;
+    attempt++) {
+
+    Serial.println();
+
+    Serial.println(
+      "--------------------------------");
+
+
+    Serial.print(
+      "[AI] Attempt ");
+
+    Serial.print(
+      attempt);
+
+    Serial.print(
+      "/");
+
+    Serial.println(
+      MAX_AI_ATTEMPTS);
+
+
+    // =================================================
+    // AI TCP CONNECTION
+    // =================================================
+
+    WiFiClient aiClient;
+
+
+    aiClient.setTimeout(
+      30000);
+
+
+    Serial.print(
+      "[AI] Connecting to ");
+
+    Serial.print(
+      AI_SERVER_IP);
+
+    Serial.print(
+      ":");
+
+    Serial.println(
+      AI_SERVER_PORT);
+
+
+    if (
+      !aiClient.connect(
+        AI_SERVER_IP,
+        AI_SERVER_PORT)) {
+
+      Serial.println(
+        "[AI ERROR] Cannot connect to Python server.");
+
+      aiClient.stop();
+
+
+      if (
+        attempt <
+        MAX_AI_ATTEMPTS) {
+
+        Serial.println(
+          "[AI] Retrying in 2 seconds...");
+
+        delay(2000);
+
+        continue;
+      }
+
+
+      free(
+        imageBuffer);
+
+      return AI_ERROR;
+    }
+
+
+    Serial.println(
+      "[AI] Python server CONNECTED.");
+
+
+    // =================================================
+    // MULTIPART
+    // =================================================
+
+    const char* boundary =
+      "----WEDENBoundary123456";
+
+
+    String bodyStart =
+      String("--") +
+      boundary +
+      "\r\n"
+      "Content-Disposition: form-data; "
+      "name=\"image\"; filename=\"camera.jpg\"\r\n"
+      "Content-Type: image/jpeg\r\n"
+      "\r\n";
+
+
+    String bodyEnd =
+      String("\r\n--") +
+      boundary +
+      "--\r\n";
+
+
+    size_t totalBodySize =
+      bodyStart.length() +
+      totalRead +
+      bodyEnd.length();
+
+
+    // =================================================
+    // HTTP REQUEST
+    // =================================================
+
+    aiClient.print(
+      "POST ");
+
+    aiClient.print(
+      AI_SERVER_PATH);
+
+    aiClient.println(
+      " HTTP/1.1");
+
+
+    aiClient.print(
+      "Host: ");
+
+    aiClient.print(
+      AI_SERVER_IP);
+
+    aiClient.print(
+      ":");
+
+    aiClient.println(
+      AI_SERVER_PORT);
+
+
+    aiClient.println(
+      "Connection: close");
+
+
+    aiClient.print(
+      "Content-Type: multipart/form-data; boundary=");
+
+    aiClient.println(
+      boundary);
+
+
+    aiClient.print(
+      "Content-Length: ");
+
+    aiClient.println(
+      totalBodySize);
+
+
+    aiClient.println();
+
+
+    // =================================================
+    // BODY HEADER
+    // =================================================
+
+    aiClient.print(
+      bodyStart);
+
+
+    // =================================================
+    // JPEG UPLOAD
+    // =================================================
+
+    Serial.print(
+      "[AI] Uploading JPEG: ");
+
+    Serial.print(
+      totalRead);
+
+    Serial.println(
+      " bytes...");
+
+
+    size_t sentBytes = 0;
+
+
+    bool uploadOK =
+      true;
+
+
+    unsigned long uploadStart =
+      millis();
+
+
+    while (
+      sentBytes <
+      totalRead &&
+      millis() -
+      uploadStart <
+      30000) {
+
+      size_t remaining =
+        totalRead -
+        sentBytes;
+
+
+      size_t chunkSize =
+        remaining;
+
+
+      if (
+        chunkSize >
+        2048) {
+
+        chunkSize =
+          2048;
+      }
+
+
+      size_t written =
+        aiClient.write(
+          imageBuffer +
+          sentBytes,
+          chunkSize);
+
+
+      if (
+        written == 0) {
+
+        uploadOK =
+          false;
+
+        break;
+      }
+
+
+      sentBytes +=
+        written;
+
+
+      delay(2);
+
+      yield();
+    }
+
+
+    if (
+      sentBytes !=
+      totalRead) {
+
+      uploadOK =
+        false;
+    }
+
+
+    if (!uploadOK) {
+
+      Serial.print(
+        "[AI ERROR] Upload failed. Sent ");
+
+      Serial.print(
+        sentBytes);
+
+      Serial.print(
+        " / ");
+
+      Serial.print(
+        totalRead);
+
+      Serial.println(
+        " bytes.");
+
+
+      aiClient.stop();
+
+
+      if (
+        attempt <
+        MAX_AI_ATTEMPTS) {
+
+        Serial.println(
+          "[AI] Retrying in 2 seconds...");
+
+        delay(2000);
+
+        continue;
+      }
+
+
+      free(
+        imageBuffer);
+
+      return AI_ERROR;
+    }
+
+
+    // =================================================
+    // MULTIPART END
+    // =================================================
+
+    aiClient.print(
+      bodyEnd);
+
+
+    Serial.println(
+      "[AI] JPEG upload complete.");
+
+
+    Serial.println(
+      "[AI] Waiting for Python response...");
+
+
+    // =================================================
+    // RESPONSE
+    // =================================================
+
+    String response = "";
+
+
+    unsigned long responseStart =
+      millis();
+
+
+    while (
+      millis() -
+      responseStart <
+      60000) {
+
+      while (
+        aiClient.available()) {
+
+        char c =
+          aiClient.read();
+
+
+        if (
+          response.length() <
+          8192) {
+
+          response +=
+            c;
+        }
+      }
+
+
+      if (
+        !aiClient.connected() &&
+        !aiClient.available()) {
+
+        break;
+      }
+
+
+      delay(5);
+
+      yield();
+    }
+
+
+    aiClient.stop();
+
+
+    // =================================================
+    // RAW RESPONSE
+    // =================================================
+
+    Serial.println();
+
+    Serial.println(
+      "[AI] =================================");
+
+    Serial.println(
+      "[AI] PYTHON SERVER RESPONSE:");
+
+    Serial.println(
+      response);
+
+    Serial.println(
+      "[AI] =================================");
+
+
+    // =================================================
+    // HTTP STATUS
+    // =================================================
+
+    int httpStatusCode =
+      -1;
+
+
+    int statusPos =
+      response.indexOf(
+        "HTTP/1.1 ");
+
+
+    if (
+      statusPos < 0) {
+
+      statusPos =
+        response.indexOf(
+          "HTTP/1.0 ");
+    }
+
+
+    if (
+      statusPos >= 0 &&
+      response.length() >=
+      statusPos + 12) {
+
+      String code =
+        response.substring(
+          statusPos + 9,
+          statusPos + 12);
+
+
+      httpStatusCode =
+        code.toInt();
+    }
+
+
+    Serial.print(
+      "[AI] HTTP STATUS: ");
+
+    Serial.println(
+      httpStatusCode);
+
+
+    // =================================================
+    // HTTP 200
+    // =================================================
+
+    if (
+      httpStatusCode == 200) {
+
+      int bodyPosition =
+        response.indexOf(
+          "\r\n\r\n");
+
+
+      String result =
+        "";
+
+
+      if (
+        bodyPosition >= 0) {
+
+        result =
+          response.substring(
+            bodyPosition + 4);
+      }
+
+      else {
+
+        result =
+          response;
+      }
+
+
+      result.trim();
+
+
+      // =================================================
+      // NORMALIZE RESPONSE
+      // =================================================
+
+      String upperResult =
+        result;
+
+      upperResult.toUpperCase();
+
+
+      Serial.print(
+        "[AI] RESULT BODY: ");
+
+      Serial.println(
+        result);
+
+
+      Serial.print(
+        "[AI] NORMALIZED: ");
+
+      Serial.println(
+        upperResult);
+
+
+      // =================================================
+      // NO FIRE FIRST
+      // =================================================
+
+      if (
+        upperResult.indexOf(
+          "NO_FIRE") >= 0) {
+
+        Serial.println();
+
+        Serial.println(
+          "[AI] VERIFICATION: NO FIRE");
+
+
+        free(
+          imageBuffer);
+
+        return AI_NO_FIRE;
+      }
+
+
+      // =================================================
+      // FIRE
+      // =================================================
+
+      if (
+        upperResult.indexOf(
+          "FIRE") >= 0) {
+
+        Serial.println();
+
+        Serial.println(
+          "[AI] VERIFICATION: FIRE");
+
+
+        free(
+          imageBuffer);
+
+        return AI_FIRE;
+      }
+
+
+      // =================================================
+      // UNKNOWN
+      // =================================================
+
+      Serial.println(
+        "[AI ERROR] Unknown AI response.");
+
+      Serial.println(
+        "[AI ERROR] Expected FIRE or NO_FIRE.");
+
+
+      if (
+        attempt <
+        MAX_AI_ATTEMPTS) {
+
+        Serial.println(
+          "[AI] Retrying...");
+
+        delay(2000);
+
+        continue;
+      }
+
+
+      free(
+        imageBuffer);
+
+      return AI_ERROR;
+    }
+
+
+    // =================================================
+    // SERVER ERROR
+    // =================================================
+
+    Serial.print(
+      "[AI ERROR] Python HTTP status: ");
+
+    Serial.println(
+      httpStatusCode);
+
+
+    if (
+      attempt <
+      MAX_AI_ATTEMPTS) {
+
+      Serial.println(
+        "[AI] Retrying in 2 seconds...");
+
+      delay(2000);
+
+      continue;
+    }
+
+
+    free(
+      imageBuffer);
+
+    return AI_ERROR;
+  }
+
+
+  // ===================================================
+  // FINAL ERROR
+  // ===================================================
+
+  free(
+    imageBuffer);
+
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "[AI ERROR] AI VERIFICATION FAILED");
+
+  Serial.println(
+    "================================");
+
+
+  return AI_ERROR;
+}
+
+
+// =====================================================
+// SEND SMS
+// =====================================================
+
+bool sendSMS() {
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       SENDING SMS ALERT");
+
+  Serial.println(
+    "================================");
+
+
+  while (
+    A7670E.available()) {
+
+    A7670E.read();
+  }
+
+
+  Serial.println(
+    ">> AT");
+
+
+  A7670E.println(
+    "AT");
+
+
+  printA7670Response(
+    1000);
+
+
+  Serial.println(
+    ">> AT+CMGF=1");
+
+
+  A7670E.println(
+    "AT+CMGF=1");
+
+
+  printA7670Response(
+    1000);
+
+
+  A7670E.print(
+    "AT+CMGS=\"");
+
+
+  A7670E.print(
+    PHONE_NUMBER);
+
+
+  A7670E.println(
+    "\"");
+
+
+  delayWithFireBlink(
+    1500);
+
+
+  while (
+    A7670E.available()) {
+
+    Serial.write(
+      A7670E.read());
+  }
+
+
+  String message =
+    "WILDFIRE ALERT! "
+    "Fire detected by MQ2 and TMP36. "
+    "ESP32-CAM AI verification confirmed FIRE. "
+    "Please respond immediately.";
+
+
+  A7670E.print(
+    message);
+
+
+  A7670E.write(
+    26);
+
+
+  String smsResponse =
+    "";
+
+
+  unsigned long startTime =
+    millis();
+
+
+  while (
+    millis() -
+    startTime <
+    15000) {
+
+    updateFireLEDBlink();
+
+
+    while (
+      A7670E.available()) {
+
+      char c =
+        A7670E.read();
+
+
+      Serial.write(
+        c);
+
+
+      smsResponse +=
+        c;
+    }
+
+
+    delay(10);
+  }
+
+
+  if (
+    smsResponse.indexOf(
+      "+CMGS:") >= 0 &&
+    smsResponse.indexOf(
+      "OK") >= 0) {
+
+    Serial.println(
+      "SMS SEND: SUCCESS");
+
+    return true;
+  }
+
+
+  Serial.println(
+    "SMS SEND: FAILED");
+
+  return false;
+}
+
+
+// =====================================================
+// MAKE CALL
+// =====================================================
+
+bool makeCall() {
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       EMERGENCY CALL");
+
+  Serial.println(
+    "================================");
+
+
+  A7670E.println(
+    "AT");
+
+
+  printA7670Response(
+    1000);
+
+
+  A7670E.println(
+    "AT+CEREG?");
+
+
+  printA7670Response(
+    1500);
+
+
+  Serial.print(
+    "Calling ");
+
+  Serial.println(
+    PHONE_NUMBER);
+
+
+  A7670E.print(
+    "ATD");
+
+
+  A7670E.print(
+    PHONE_NUMBER);
+
+
+  A7670E.println(
+    ";");
+
+
+  delayWithFireBlink(
+    3000);
+
+
+  Serial.println(
+    "CALL STARTED.");
+
+
+  unsigned long callStart =
+    millis();
+
+
+  while (
+    millis() -
+    callStart <
+    30000) {
+
+    updateFireLEDBlink();
+
+
+    while (
+      A7670E.available()) {
+
+      Serial.write(
+        A7670E.read());
+    }
+
+
+    delay(100);
+  }
+
+
+  Serial.println(
+    ">> ATH");
+
+
+  A7670E.println(
+    "ATH");
+
+
+  delayWithFireBlink(
+    1000);
+
+
+  printA7670Response(
+    1000);
+
+
+  Serial.println(
+    "CALL ENDED.");
+
+
+  return true;
+}
+
+
+// =====================================================
+// A7670E RESPONSE
+// =====================================================
+
+void printA7670Response(
+  unsigned long waitTime) {
+
+  unsigned long startTime =
+    millis();
+
+
+  while (
+    millis() -
+    startTime <
+    waitTime) {
+
+    updateFireLEDBlink();
+
+
+    while (
+      A7670E.available()) {
+
+      char c =
+        A7670E.read();
+
+
+      Serial.write(
+        c);
+    }
+
+
+    delay(10);
+  }
+
+
+  Serial.println();
+}
+
+
+// =====================================================
+// WIFI CONNECTION
+// =====================================================
+
+void connectWiFi() {
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       WIFI CONNECTION");
+
+  Serial.println(
+    "================================");
+
+
+  WiFi.mode(
+    WIFI_STA);
+
+
+  WiFi.setSleep(
+    false);
+
+
+  WiFi.begin(
+    WIFI_SSID,
+    WIFI_PASSWORD);
+
+
+  int attempts =
+    0;
+
+
+  while (
+    WiFi.status() !=
+    WL_CONNECTED &&
+    attempts < 30) {
+
+    delay(500);
+
+    Serial.print(
+      ".");
+
+    attempts++;
+  }
+
+
+  Serial.println();
+
+
+  if (
+    WiFi.status() ==
+    WL_CONNECTED) {
+
+    Serial.println(
+      "WiFi: CONNECTED");
+
+
+    Serial.print(
+      "Main ESP32 IP: ");
+
+    Serial.println(
+      WiFi.localIP());
+
+
+    Serial.print(
+      "ESP32-CAM IP: ");
+
+    Serial.println(
+      CAMERA_IP);
+
+
+    Serial.print(
+      "Python AI Server: ");
+
+    Serial.println(
+      AI_VERIFY_URL);
+  }
+
+  else {
+
+    Serial.println(
+      "WiFi: CONNECTION FAILED");
+  }
+}
