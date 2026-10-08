@@ -1,0 +1,1008 @@
+
+#include <Arduino.h>
+#include "esp_camera.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WebServer.h>
+
+// =====================================================
+// CAMERA BOARD CONFIG
+// =====================================================
+
+#include "board_config.h"
+
+
+// =====================================================
+// WIFI
+// =====================================================
+
+const char *ssid = "Infinix HOT 60 Pro";
+const char *password = "bahalakadiha";
+
+
+// =====================================================
+// PYTHON AI SERVER
+// =====================================================
+
+const char *AI_SERVER =
+  "http://10.87.8.245:5000/verify";
+
+
+// =====================================================
+// CAMERA WEB SERVER
+// =====================================================
+//
+// Main ESP32 will request:
+//
+// http://10.87.8.186/capture
+//
+// and receive a JPEG image.
+//
+// =====================================================
+
+WebServer server(80);
+
+
+// =====================================================
+// CAMERA SERVER FUNCTIONS
+// =====================================================
+
+void startCameraServer();
+
+void setupLedFlash();
+
+
+// =====================================================
+// CAPTURE ENDPOINT
+// =====================================================
+//
+// URL:
+//
+// /capture
+//
+// Returns:
+// JPEG image
+//
+// =====================================================
+
+void handleCapture() {
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("CAMERA CAPTURE REQUEST");
+  Serial.println("================================");
+
+  Serial.println("Capturing image...");
+
+
+  camera_fb_t *fb =
+    esp_camera_fb_get();
+
+
+  if (!fb) {
+
+    Serial.println(
+      "ERROR: Camera capture failed.");
+
+    server.send(
+      500,
+      "text/plain",
+      "CAMERA_CAPTURE_FAILED");
+
+    return;
+  }
+
+
+  Serial.print(
+    "Image captured: ");
+
+  Serial.print(
+    fb->len);
+
+  Serial.println(
+    " bytes");
+
+
+  // Send JPEG to requester
+
+  WiFiClient client =
+    server.client();
+
+
+  server.setContentLength(
+    fb->len);
+
+  server.send(
+    200,
+    "image/jpeg");
+
+
+  client.write(
+    fb->buf,
+    fb->len);
+
+
+  // Return frame buffer
+
+  esp_camera_fb_return(
+    fb);
+
+
+  Serial.println(
+    "JPEG sent successfully.");
+
+  Serial.println(
+    "================================");
+}
+
+
+// =====================================================
+// ROOT PAGE
+// =====================================================
+
+void handleRoot() {
+
+  String html = "";
+
+  html += "<html>";
+  html += "<head>";
+  html += "<title>ESP32-CAM Wildfire Node</title>";
+  html += "</head>";
+
+  html += "<body>";
+
+  html += "<h1>ESP32-CAM Wildfire Node</h1>";
+
+  html += "<p>Camera is online.</p>";
+
+  html += "<p>";
+  html += "<a href=\"/capture\">";
+  html += "Capture Image";
+  html += "</a>";
+  html += "</p>";
+
+  html += "</body>";
+  html += "</html>";
+
+
+  server.send(
+    200,
+    "text/html",
+    html);
+}
+
+
+// =====================================================
+// AI VERIFICATION
+// =====================================================
+//
+// This is a MANUAL AI test.
+//
+// You can type:
+//
+// TEST
+//
+// in Serial Monitor.
+//
+// =====================================================
+
+void verifyWithAI() {
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("       AI FIRE VERIFICATION");
+  Serial.println("================================");
+
+
+  // ===================================================
+  // CHECK WIFI
+  // ===================================================
+
+  if (
+    WiFi.status() != WL_CONNECTED) {
+
+    Serial.println(
+      "ERROR: WiFi disconnected.");
+
+    return;
+  }
+
+
+  // ===================================================
+  // CAPTURE IMAGE
+  // ===================================================
+
+  Serial.println(
+    "Capturing camera image...");
+
+
+  camera_fb_t *fb =
+    esp_camera_fb_get();
+
+
+  if (!fb) {
+
+    Serial.println(
+      "CAMERA CAPTURE FAILED");
+
+    return;
+  }
+
+
+  Serial.print(
+    "Image captured. Size: ");
+
+  Serial.print(
+    fb->len);
+
+  Serial.println(
+    " bytes");
+
+
+  // ===================================================
+  // CONNECT TO PYTHON
+  // ===================================================
+
+  HTTPClient http;
+
+
+  Serial.println();
+  Serial.println(
+    "Sending image to Python AI...");
+
+  Serial.println(
+    AI_SERVER);
+
+
+  http.begin(
+    AI_SERVER);
+
+  http.setTimeout(
+    30000);
+
+
+  // ===================================================
+  // MULTIPART FORM DATA
+  // ===================================================
+
+  String boundary =
+    "----ESP32CAMBoundary";
+
+
+  http.addHeader(
+    "Content-Type",
+    "multipart/form-data; boundary=" + boundary);
+
+
+  String bodyStart =
+    "--" + boundary + "\r\n"
+                      "Content-Disposition: form-data; "
+                      "name=\"image\"; "
+                      "filename=\"camera.jpg\"\r\n"
+                      "Content-Type: image/jpeg\r\n\r\n";
+
+
+  String bodyEnd =
+    "\r\n--" + boundary + "--\r\n";
+
+
+  size_t totalSize =
+    bodyStart.length() + fb->len + bodyEnd.length();
+
+
+  // ===================================================
+  // ALLOCATE MEMORY
+  // ===================================================
+
+  uint8_t *postData =
+    (uint8_t *)malloc(
+      totalSize);
+
+
+  if (!postData) {
+
+    Serial.println(
+      "ERROR: Not enough memory.");
+
+
+    esp_camera_fb_return(
+      fb);
+
+
+    http.end();
+
+    return;
+  }
+
+
+  // ===================================================
+  // COPY MULTIPART HEADER
+  // ===================================================
+
+  memcpy(
+    postData,
+    bodyStart.c_str(),
+    bodyStart.length());
+
+
+  // ===================================================
+  // COPY JPEG
+  // ===================================================
+
+  memcpy(
+    postData + bodyStart.length(),
+
+    fb->buf,
+
+    fb->len);
+
+
+  // ===================================================
+  // COPY MULTIPART END
+  // ===================================================
+
+  memcpy(
+    postData + bodyStart.length() + fb->len,
+
+    bodyEnd.c_str(),
+
+    bodyEnd.length());
+
+
+  // ===================================================
+  // RETURN CAMERA BUFFER
+  // ===================================================
+
+  esp_camera_fb_return(
+    fb);
+
+
+  // ===================================================
+  // SEND TO PYTHON
+  // ===================================================
+
+  Serial.println(
+    "Uploading image...");
+
+
+  int httpCode =
+    http.POST(
+      postData,
+      totalSize);
+
+
+  free(
+    postData);
+
+
+  Serial.print(
+    "HTTP Response Code: ");
+
+  Serial.println(
+    httpCode);
+
+
+  // ===================================================
+  // CHECK RESPONSE
+  // ===================================================
+
+  if (
+    httpCode > 0) {
+
+    String response =
+      http.getString();
+
+
+    response.trim();
+
+
+    Serial.println();
+    Serial.println(
+      "================================");
+
+    Serial.println(
+      "       AI RESPONSE");
+
+    Serial.println(
+      "================================");
+
+
+    Serial.println(
+      response);
+
+
+    // Convert to uppercase
+
+    response.toUpperCase();
+
+
+    // =================================================
+    // FIRE
+    // =================================================
+
+    if (
+      response.indexOf("FIRE") >= 0 && response.indexOf("NO_FIRE") < 0) {
+
+      Serial.println();
+      Serial.println(
+        "################################");
+
+      Serial.println(
+        "       AI RESULT: FIRE");
+
+      Serial.println(
+        "################################");
+    }
+
+
+    // =================================================
+    // NO FIRE
+    // =================================================
+
+    else if (
+      response.indexOf("NO_FIRE") >= 0) {
+
+      Serial.println();
+      Serial.println(
+        "================================");
+
+      Serial.println(
+        "       AI RESULT: NO FIRE");
+
+      Serial.println(
+        "================================");
+    }
+
+
+    // =================================================
+    // UNKNOWN
+    // =================================================
+
+    else {
+
+      Serial.println();
+      Serial.println(
+        "UNKNOWN AI RESPONSE");
+    }
+
+  }
+
+  else {
+
+    Serial.println();
+    Serial.println(
+      "AI SERVER CONNECTION FAILED.");
+
+    Serial.print(
+      "HTTP ERROR: ");
+
+    Serial.println(
+      http.errorToString(
+        httpCode));
+  }
+
+
+  http.end();
+
+
+  Serial.println();
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       AI TEST COMPLETE");
+
+  Serial.println(
+    "================================");
+}
+
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup() {
+
+  Serial.begin(
+    115200);
+
+
+  Serial.setDebugOutput(
+    true);
+
+
+  delay(1000);
+
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "     ESP32-CAM WILDFIRE NODE");
+
+  Serial.println(
+    "================================");
+
+
+  // ===================================================
+  // CAMERA CONFIGURATION
+  // ===================================================
+
+  camera_config_t config;
+
+
+  config.ledc_channel =
+    LEDC_CHANNEL_0;
+
+  config.ledc_timer =
+    LEDC_TIMER_0;
+
+
+  config.pin_d0 =
+    Y2_GPIO_NUM;
+
+  config.pin_d1 =
+    Y3_GPIO_NUM;
+
+  config.pin_d2 =
+    Y4_GPIO_NUM;
+
+  config.pin_d3 =
+    Y5_GPIO_NUM;
+
+  config.pin_d4 =
+    Y6_GPIO_NUM;
+
+  config.pin_d5 =
+    Y7_GPIO_NUM;
+
+  config.pin_d6 =
+    Y8_GPIO_NUM;
+
+  config.pin_d7 =
+    Y9_GPIO_NUM;
+
+
+  config.pin_xclk =
+    XCLK_GPIO_NUM;
+
+  config.pin_pclk =
+    PCLK_GPIO_NUM;
+
+  config.pin_vsync =
+    VSYNC_GPIO_NUM;
+
+  config.pin_href =
+    HREF_GPIO_NUM;
+
+
+  config.pin_sccb_sda =
+    SIOD_GPIO_NUM;
+
+  config.pin_sccb_scl =
+    SIOC_GPIO_NUM;
+
+
+  config.pin_pwdn =
+    PWDN_GPIO_NUM;
+
+  config.pin_reset =
+    RESET_GPIO_NUM;
+
+
+  config.xclk_freq_hz =
+    20000000;
+
+
+  // ===================================================
+  // IMAGE FORMAT
+  // ===================================================
+
+  config.pixel_format =
+    PIXFORMAT_JPEG;
+
+
+  // ===================================================
+  // INITIAL FRAME SIZE
+  // ===================================================
+
+  config.frame_size =
+    FRAMESIZE_VGA;
+
+
+  config.jpeg_quality =
+    12;
+
+
+  config.fb_count =
+    1;
+
+
+  config.grab_mode =
+    CAMERA_GRAB_WHEN_EMPTY;
+
+
+  config.fb_location =
+    CAMERA_FB_IN_PSRAM;
+
+
+  // ===================================================
+  // PSRAM
+  // ===================================================
+
+  if (
+    config.pixel_format == PIXFORMAT_JPEG) {
+
+    if (
+      psramFound()) {
+
+      Serial.println(
+        "PSRAM detected.");
+
+
+      config.jpeg_quality =
+        10;
+
+
+      config.fb_count =
+        2;
+
+
+      config.grab_mode =
+        CAMERA_GRAB_LATEST;
+    }
+
+    else {
+
+      Serial.println(
+        "WARNING: PSRAM not detected.");
+
+
+      config.frame_size =
+        FRAMESIZE_VGA;
+
+
+      config.fb_location =
+        CAMERA_FB_IN_DRAM;
+    }
+  }
+
+
+  // ===================================================
+  // CAMERA INIT
+  // ===================================================
+
+  Serial.println();
+  Serial.println(
+    "Initializing camera...");
+
+
+  esp_err_t err =
+    esp_camera_init(
+      &config);
+
+
+  if (
+    err != ESP_OK) {
+
+    Serial.printf(
+      "Camera init failed with error 0x%x\n",
+      err);
+
+
+    Serial.println(
+      "SYSTEM STOPPED.");
+
+
+    return;
+  }
+
+
+  Serial.println(
+    "Camera initialized successfully.");
+
+
+  // ===================================================
+  // CAMERA SENSOR SETTINGS
+  // ===================================================
+
+  sensor_t *s =
+    esp_camera_sensor_get();
+
+
+  if (!s) {
+
+    Serial.println(
+      "ERROR: Camera sensor unavailable.");
+
+    return;
+  }
+
+
+  // ===================================================
+  // OV3660 SETTINGS
+  // ===================================================
+
+  if (
+    s->id.PID == OV3660_PID) {
+
+    s->set_vflip(
+      s,
+      1);
+
+
+    s->set_brightness(
+      s,
+      1);
+
+
+    s->set_saturation(
+      s,
+      -2);
+  }
+
+
+  // ===================================================
+  // AI IMAGE QUALITY
+  // ===================================================
+
+  s->set_framesize(
+    s,
+    FRAMESIZE_VGA);
+
+
+  // ===================================================
+  // LED
+  // ===================================================
+
+#if defined(LED_GPIO_NUM)
+
+  setupLedFlash();
+
+#endif
+
+
+  // ===================================================
+  // WIFI
+  // ===================================================
+
+  Serial.println();
+  Serial.println(
+    "Connecting to WiFi...");
+
+
+  WiFi.mode(
+    WIFI_STA);
+
+
+  WiFi.begin(
+    ssid,
+    password);
+
+
+  WiFi.setSleep(
+    false);
+
+
+  int wifiAttempts =
+    0;
+
+
+  while (
+    WiFi.status() != WL_CONNECTED && wifiAttempts < 40) {
+
+    delay(500);
+
+    Serial.print(".");
+
+    wifiAttempts++;
+  }
+
+
+  Serial.println();
+
+
+  // ===================================================
+  // WIFI RESULT
+  // ===================================================
+
+  if (
+    WiFi.status() != WL_CONNECTED) {
+
+    Serial.println(
+      "ERROR: WiFi connection failed.");
+
+    return;
+  }
+
+
+  Serial.println(
+    "WiFi connected!");
+
+
+  // ===================================================
+  // IP ADDRESS
+  // ===================================================
+
+  Serial.print(
+    "ESP32-CAM IP: ");
+
+  Serial.println(
+    WiFi.localIP());
+
+
+  // ===================================================
+  // AI SERVER
+  // ===================================================
+
+  Serial.print(
+    "AI Server: ");
+
+  Serial.println(
+    AI_SERVER);
+
+
+  // ===================================================
+  // CAMERA HTTP SERVER
+  // ===================================================
+
+  server.on(
+    "/",
+    HTTP_GET,
+    handleRoot);
+
+
+  server.on(
+    "/capture",
+    HTTP_GET,
+    handleCapture);
+
+
+  server.begin();
+
+
+  Serial.println();
+  Serial.println(
+    "Camera HTTP server started.");
+
+
+  // ===================================================
+  // READY
+  // ===================================================
+
+  Serial.println();
+
+  Serial.println(
+    "================================");
+
+  Serial.println(
+    "       ESP32-CAM READY");
+
+  Serial.println(
+    "================================");
+
+
+  Serial.println();
+
+  Serial.print(
+    "Camera URL: http://");
+
+  Serial.print(
+    WiFi.localIP());
+
+  Serial.println(
+    "/capture");
+
+
+  Serial.println();
+
+  Serial.print(
+    "AI Server: ");
+
+  Serial.println(
+    AI_SERVER);
+
+
+  Serial.println();
+
+  Serial.println(
+    "Manual AI test:");
+
+  Serial.println(
+    "Type TEST in Serial Monitor.");
+
+
+  Serial.println();
+
+  Serial.println(
+    "Automatic camera capture:");
+
+  Serial.println(
+    "GET /capture");
+
+
+  Serial.println();
+
+  Serial.println(
+    "SYSTEM READY.");
+}
+
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop() {
+
+  // ===================================================
+  // HANDLE CAMERA HTTP REQUESTS
+  // ===================================================
+
+  server.handleClient();
+
+
+  // ===================================================
+  // MANUAL AI TEST
+  // ===================================================
+
+  if (
+    Serial.available()) {
+
+    String command =
+      Serial.readStringUntil(
+        '\n');
+
+
+    command.trim();
+
+    command.toUpperCase();
+
+
+    if (
+      command == "TEST") {
+
+      verifyWithAI();
+    }
+
+
+    else if (
+      command == "CAPTURE") {
+
+      Serial.println();
+      Serial.println(
+        "Manual capture test.");
+
+
+      camera_fb_t *fb =
+        esp_camera_fb_get();
+
+
+      if (fb) {
+
+        Serial.print(
+          "Capture successful: ");
+
+        Serial.print(
+          fb->len);
+
+        Serial.println(
+          " bytes");
+
+
+        esp_camera_fb_return(
+          fb);
+      }
+
+      else {
+
+        Serial.println(
+          "CAMERA CAPTURE FAILED");
+      }
+    }
+  }
+
+
+  delay(10);
+}
