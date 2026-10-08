@@ -1,0 +1,16 @@
+# After successful training, change server.py from:
+# MODEL_PATH = "model/SAINet_v11.1.pt"
+# to:
+# MODEL_PATH = "model/SAINet_v11.2.pt"
+#
+# Then copy:
+# runs/train/SAINet_v11.2/weights/best.pt
+# to:
+# model/SAINet_v11.2.pt
+#
+# IMPORTANT: the new model has 3 classes:
+# 0 fire
+# 1 screen_fire
+# 2 smoke
+#
+# The /verify decision should treat screen_fire as NO_FIRE.
